@@ -6,7 +6,7 @@
 #   - manual trigger (workflow_dispatch)
 #
 # Jobs:
-#   1. test-unit       — pytest (156+ unit tests)
+#   1. test-unit       — pytest (unit tests)
 #   2. lint            — mypy (strict type checking)
 #   3. check-compat    — Superset API compatibility check (version matrix)
 #   4. integration     — E2E tests against an ephemeral Superset container (opt-in)
@@ -32,7 +32,6 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
-  UV_VERSION: "0.4"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Job 1: Unit tests
@@ -57,12 +56,9 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        working-directory: superset-auth-kit
-        run: |
-          pip install -e ".[dev]"
+        run: pip install -e ".[dev]"
 
       - name: Run unit tests
-        working-directory: superset-auth-kit
         run: |
           pytest tests/unit/ \
             -v \
@@ -78,7 +74,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: superset-auth-kit/coverage.xml
+          path: coverage.xml
           retention-days: 7
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -99,12 +95,9 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        working-directory: superset-auth-kit
-        run: |
-          pip install -e ".[dev]"
+        run: pip install -e ".[dev]"
 
       - name: Run mypy
-        working-directory: superset-auth-kit
         run: |
           mypy superset_auth_kit/ \
             --ignore-missing-imports \
@@ -112,8 +105,6 @@ jobs:
         # The CLI is excluded from strict mypy because it depends on flask.cli
         # and current_app (runtime injection) which are incompatible with strict typing.
         continue-on-error: true
-        # continue-on-error: mypy is informational in CI for now.
-        # Switch to false after resolving conditional Superset imports.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Job 3: check-compat — Superset API compatibility (version matrix)
@@ -125,8 +116,6 @@ jobs:
       fail-fast: false
       matrix:
         superset-version: ["6.1.0"]
-        # Add future versions to test:
-        # superset-version: ["6.1.0", "6.2.0"]
 
     services:
       postgres:
@@ -164,8 +153,8 @@ jobs:
       - name: Install Superset ${{ matrix.superset-version }} + SAK
         run: |
           pip install apache-superset==${{ matrix.superset-version }} || \
-          pip install apache-superset  # fallback to latest if exact version unavailable
-          pip install -e "./superset-auth-kit[api,cli]"
+          pip install apache-superset
+          pip install -e ".[api,cli]"
 
       - name: Initialize Superset DB
         env:
@@ -181,19 +170,14 @@ jobs:
           SUPERSET_CONFIG_PATH: /dev/null
           SQLALCHEMY_DATABASE_URI: "postgresql+psycopg2://superset:superset@localhost:5432/superset"
           SECRET_KEY: "ci-secret-key-not-for-production-32chars"
-        run: |
-          superset authkit check-compat
-        # Returns exit 1 if any permissions are missing from the FAB registry.
-        # The job fails → immediate alert on the PR.
+        run: superset authkit check-compat
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Job 4: E2E integration tests (opt-in, manual trigger or PR label)
+# Job 4: E2E integration tests (opt-in, manual trigger)
 # ─────────────────────────────────────────────────────────────────────────────
   integration:
     name: E2E Integration Tests
     runs-on: ubuntu-latest
-    # Only runs when triggered manually with run_integration=true
-    # or when the commit message contains [integration]
     if: |
       github.event_name == 'workflow_dispatch' && inputs.run_integration == 'true'
       || contains(github.event.head_commit.message, '[integration]')
@@ -210,15 +194,10 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        working-directory: superset-auth-kit
-        run: |
-          pip install -e ".[dev]"
+        run: pip install -e ".[dev]"
 
       - name: Run integration tests
-        working-directory: superset-auth-kit
         env:
-          # Integration tests launch a local Docker container.
-          # Docker is available on ubuntu-latest via GitHub Actions.
           DOCKER_BUILDKIT: "1"
         run: |
           pytest tests/integration/ \
