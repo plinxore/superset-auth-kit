@@ -112,7 +112,8 @@ jobs:
   check-compat:
     name: check-compat Superset ${{ matrix.superset-version }}
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # Only runs on manual trigger — requires a full Superset install + DB init
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
