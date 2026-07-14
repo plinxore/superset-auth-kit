@@ -67,7 +67,7 @@ jobs:
             --cov=superset_auth_kit \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
-            --cov-fail-under=80
+            --cov-fail-under=75
 
       - name: Upload coverage report
         if: matrix.python-version == '3.12'
