@@ -1,0 +1,229 @@
+# .github/workflows/tests.yml — superset-auth-kit CI/CD pipeline
+#
+# Triggers:
+#   - push to main
+#   - pull_request targeting main
+#   - manual trigger (workflow_dispatch)
+#
+# Jobs:
+#   1. test-unit       — pytest (156+ unit tests)
+#   2. lint            — mypy (strict type checking)
+#   3. check-compat    — Superset API compatibility check (version matrix)
+#   4. integration     — E2E tests against an ephemeral Superset container (opt-in)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_integration:
+        description: "Run Docker integration tests"
+        required: false
+        default: "false"
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.4"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 1: Unit tests
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  test-unit:
+    name: Unit tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        working-directory: superset-auth-kit
+        run: |
+          pip install -e ".[dev]"
+
+      - name: Run unit tests
+        working-directory: superset-auth-kit
+        run: |
+          pytest tests/unit/ \
+            -v \
+            --tb=short \
+            -m "not integration" \
+            --cov=superset_auth_kit \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=80
+
+      - name: Upload coverage report
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: superset-auth-kit/coverage.xml
+          retention-days: 7
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 2: Type checking (mypy)
+# ─────────────────────────────────────────────────────────────────────────────
+  lint:
+    name: Type checking (mypy)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        working-directory: superset-auth-kit
+        run: |
+          pip install -e ".[dev]"
+
+      - name: Run mypy
+        working-directory: superset-auth-kit
+        run: |
+          mypy superset_auth_kit/ \
+            --ignore-missing-imports \
+            --exclude 'superset_auth_kit/cli/commands\.py'
+        # The CLI is excluded from strict mypy because it depends on flask.cli
+        # and current_app (runtime injection) which are incompatible with strict typing.
+        continue-on-error: true
+        # continue-on-error: mypy is informational in CI for now.
+        # Switch to false after resolving conditional Superset imports.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 3: check-compat — Superset API compatibility (version matrix)
+# ─────────────────────────────────────────────────────────────────────────────
+  check-compat:
+    name: check-compat Superset ${{ matrix.superset-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        superset-version: ["6.1.0"]
+        # Add future versions to test:
+        # superset-version: ["6.1.0", "6.2.0"]
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: superset
+          POSTGRES_PASSWORD: superset
+          POSTGRES_DB: superset
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Superset ${{ matrix.superset-version }} + SAK
+        run: |
+          pip install apache-superset==${{ matrix.superset-version }} || \
+          pip install apache-superset  # fallback to latest if exact version unavailable
+          pip install -e "./superset-auth-kit[api,cli]"
+
+      - name: Initialize Superset DB
+        env:
+          SUPERSET_CONFIG_PATH: /dev/null
+          SQLALCHEMY_DATABASE_URI: "postgresql+psycopg2://superset:superset@localhost:5432/superset"
+          SECRET_KEY: "ci-secret-key-not-for-production-32chars"
+        run: |
+          superset db upgrade
+          superset init
+
+      - name: Run check-compat
+        env:
+          SUPERSET_CONFIG_PATH: /dev/null
+          SQLALCHEMY_DATABASE_URI: "postgresql+psycopg2://superset:superset@localhost:5432/superset"
+          SECRET_KEY: "ci-secret-key-not-for-production-32chars"
+        run: |
+          superset authkit check-compat
+        # Returns exit 1 if any permissions are missing from the FAB registry.
+        # The job fails → immediate alert on the PR.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 4: E2E integration tests (opt-in, manual trigger or PR label)
+# ─────────────────────────────────────────────────────────────────────────────
+  integration:
+    name: E2E Integration Tests
+    runs-on: ubuntu-latest
+    # Only runs when triggered manually with run_integration=true
+    # or when the commit message contains [integration]
+    if: |
+      github.event_name == 'workflow_dispatch' && inputs.run_integration == 'true'
+      || contains(github.event.head_commit.message, '[integration]')
+    needs: [test-unit]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        working-directory: superset-auth-kit
+        run: |
+          pip install -e ".[dev]"
+
+      - name: Run integration tests
+        working-directory: superset-auth-kit
+        env:
+          # Integration tests launch a local Docker container.
+          # Docker is available on ubuntu-latest via GitHub Actions.
+          DOCKER_BUILDKIT: "1"
+        run: |
+          pytest tests/integration/ \
+            -v \
+            --tb=short \
+            -m integration \
+            --timeout=300
+        timeout-minutes: 10

@@ -1,0 +1,143 @@
+# docker-compose.prod.yml — Déploiement production superset-auth-kit
+#
+# Pattern : le provisionnement des rôles SAK est injecté comme une étape
+# distincte dans la séquence de démarrage, AVANT le lancement du serveur.
+#
+# Séquence de démarrage garantie (healthcheck + depends_on) :
+#   1. redis        → healthcheck ping Redis
+#   2. superset-db  → healthcheck pg_isready
+#   3. superset-init → superset db upgrade + superset init
+#   4. sak-provision → superset authkit check-compat && provision-roles
+#   5. superset      → gunicorn (démarre seulement si sak-provision exit 0)
+#
+# Variables d'environnement requises (fichier .env ou secrets manager) :
+#   SUPERSET_SECRET_KEY       — Clé Flask (min 32 chars, random)
+#   SUPERSET_JWT_SECRET       — Clé JWT partagée avec le frontend
+#   GUEST_TOKEN_JWT_SECRET    — Clé JWT pour les guest tokens Superset
+#   SUPERSET_JWT_TTL_SECONDS  — Durée de vie des JWT SSO (défaut: 300)
+#   DATABASE_URL              — URL PostgreSQL de la metadata DB Superset
+#   REDIS_URL                 — URL Redis (défaut: redis://redis:6379/1)
+
+x-superset-env: &superset-env
+  SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+  SUPERSET_JWT_SECRET: ${SUPERSET_JWT_SECRET}
+  GUEST_TOKEN_JWT_SECRET: ${GUEST_TOKEN_JWT_SECRET}
+  SUPERSET_JWT_TTL_SECONDS: ${SUPERSET_JWT_TTL_SECONDS:-300}
+  SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+
+x-superset-volumes: &superset-volumes
+  - ./superset_config.py:/app/pythonpath/superset_config.py:ro
+  - superset-auth-kit:/app/pythonpath/superset_auth_kit:ro
+  - superset-home:/app/superset_home
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis-data:/data
+
+  # ── Initialisation Superset ─────────────────────────────────────────────────
+
+  superset-init:
+    image: apache/superset:${SUPERSET_VERSION:-6.1.0}
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *superset-env
+    volumes: *superset-volumes
+    # Installe SAK, migre la DB, crée l'admin, lance superset init.
+    # Ce service termine avec exit 0 → depends_on condition: service_completed_successfully
+    command: >
+      bash -c "
+        pip install --quiet /app/pythonpath/superset_auth_kit[api,cli] &&
+        superset db upgrade &&
+        superset fab create-admin
+          --username '${SUPERSET_ADMIN_USER:-admin}'
+          --email '${SUPERSET_ADMIN_EMAIL:-admin@example.com}'
+          --password '${SUPERSET_ADMIN_PASSWORD:-admin}'
+          --firstname Admin --lastname Superset
+          2>/dev/null || true &&
+        superset init
+      "
+    restart: "no"
+
+  # ── Provisionnement des rôles SAK ──────────────────────────────────────────
+
+  sak-provision:
+    image: apache/superset:${SUPERSET_VERSION:-6.1.0}
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *superset-env
+    volumes: *superset-volumes
+    # Vérification de compatibilité d'API PUIS provisionnement idempotent.
+    # Si check-compat retourne exit 1 (permission manquante), le déploiement
+    # est bloqué → les pods applicatifs ne démarrent pas.
+    command: >
+      bash -c "
+        pip install --quiet /app/pythonpath/superset_auth_kit[api,cli] &&
+        echo '[SAK] Vérification compatibilité API Superset…' &&
+        superset authkit check-compat &&
+        echo '[SAK] Provisionnement des rôles…' &&
+        superset authkit provision-roles &&
+        echo '[SAK] Provisionnement terminé avec succès.'
+      "
+    restart: "no"
+
+  # ── Application Superset ────────────────────────────────────────────────────
+
+  superset:
+    image: apache/superset:${SUPERSET_VERSION:-6.1.0}
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      sak-provision:
+        condition: service_completed_successfully
+    environment:
+      <<: *superset-env
+    volumes: *superset-volumes
+    ports:
+      - "${SUPERSET_PORT:-8088}:8088"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    command: >
+      bash -c "
+        pip install --quiet /app/pythonpath/superset_auth_kit[api,cli] &&
+        gunicorn
+          --bind 0.0.0.0:8088
+          --workers 4
+          --worker-class gthread
+          --threads 2
+          --timeout 120
+          --limit-request-line 0
+          --limit-request-field_size 0
+          'superset.app:create_app()'
+      "
+
+volumes:
+  redis-data:
+  superset-home:
+  # Bind-mount du package SAK dans le conteneur.
+  # En production, remplacer par une image buildée avec SAK installé.
+  superset-auth-kit:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${SAK_SOURCE_PATH:-../superset_auth_kit}

@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "superset-auth-kit"
+version = "0.1.0"
+description = "Transparent SSO and Deep Embed for Apache Superset OSS (multi-tenant)"
+requires-python = ">=3.10"
+dependencies = [
+    "PyJWT>=2.6,<3",
+    "cryptography>=41",   # RS256/ES256 PEM key decoding
+]
+
+[project.optional-dependencies]
+redis = ["redis>=4"]      # jti blocklist (replay attack protection)
+api = [
+    "flask>=2.3",
+    "flask-login>=0.6",
+    "marshmallow>=3.20",
+]
+cli = [
+    "flask>=2.3",
+    "click>=8.0",
+    "sqlalchemy>=1.4",
+]
+dev = [
+    "pytest>=8",
+    "pytest-cov",
+    "mypy>=1.8",
+    "types-PyJWT",
+    "flask>=2.3",
+    "flask-login>=0.6",
+    "marshmallow>=3.20",
+    "jinja2>=3.0",
+    "sqlalchemy>=1.4",
+    "requests>=2.31",
+    "docker>=7",
+]
+
+# ── Flask/Superset CLI ────────────────────────────────────────────────────────
+# Flask discovers this CLI group via the "flask.commands" entry-point mechanism.
+# After `pip install -e .` in the Superset environment, the command
+# `superset authkit provision-roles` is available without additional configuration.
+[project.entry-points."flask.commands"]
+authkit = "superset_auth_kit.cli.commands:authkit_cli"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = [
+    "integration: integration tests requiring Docker",
+    "slow: slow tests (> 10 seconds)",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["superset_auth_kit*"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true

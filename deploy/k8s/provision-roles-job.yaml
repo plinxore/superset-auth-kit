@@ -1,0 +1,127 @@
+# provision-roles-job.yaml — Kubernetes Job pour le provisionnement SAK
+#
+# Stratégie d'exécution (ADR-201) :
+#   Ce Job s'exécute AVANT les Deployment/StatefulSet Superset grâce à
+#   l'annotation Argo CD ou au pipeline CI/CD qui ordonne les ressources.
+#   En Helm, ce Job est déclaré avec le hook "pre-install,pre-upgrade".
+#
+# Alternatives disponibles :
+#   A. Job K8s autonome (ce fichier) — recommandé pour les déploiements Helm
+#   B. initContainer dans le Pod Superset (voir superset-deployment.yaml)
+#
+# Usage :
+#   kubectl apply -f provision-roles-job.yaml
+#   kubectl wait --for=condition=complete job/sak-provision-roles --timeout=300s
+#
+# Paramètres à adapter :
+#   - image              : image Superset avec SAK pré-installé
+#   - SUPERSET_CONFIG_PATH : chemin vers superset_config.py dans le Pod
+#   - secretRef          : Secret K8s contenant les variables d'environnement
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sak-provision-roles
+  namespace: superset
+  labels:
+    app.kubernetes.io/name: superset-auth-kit
+    app.kubernetes.io/component: provision
+    app.kubernetes.io/version: "0.1.0"
+  annotations:
+    # Hook Helm : exécuté avant chaque install et upgrade
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  # Aucune retry — idempotent, mais on veut un signal clair si ça échoue.
+  backoffLimit: 0
+  # Nettoyage automatique 10 minutes après complétion
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: superset-auth-kit
+        app.kubernetes.io/component: provision
+    spec:
+      restartPolicy: Never
+      serviceAccountName: superset
+      containers:
+        - name: provision-roles
+          # Image avec superset-auth-kit pré-installé.
+          # Remplacer par votre registry interne :
+          #   image: your-registry/superset-with-authkit:6.1.0
+          image: apache/superset:6.1.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              echo "[SAK] Installation de superset-auth-kit…"
+              pip install --quiet superset-auth-kit[api,cli]
+
+              echo "[SAK] Vérification de la compatibilité API Superset…"
+              superset authkit check-compat
+              # check-compat retourne exit 1 si une permission est manquante.
+              # Le Job échoue et bloque le déploiement → vérifier definitions.py.
+
+              echo "[SAK] Provisionnement idempotent des rôles SAK…"
+              superset authkit provision-roles
+              # provision-roles est idempotent : si la version est déjà à jour,
+              # aucune écriture n'est effectuée (O(1) skip).
+
+              echo "[SAK] Provisionnement terminé avec succès."
+          env:
+            - name: SUPERSET_CONFIG_PATH
+              value: /app/pythonpath/superset_config.py
+          envFrom:
+            # Secret K8s contenant SUPERSET_SECRET_KEY, SUPERSET_JWT_SECRET,
+            # GUEST_TOKEN_JWT_SECRET et les credentials DB/Redis.
+            - secretRef:
+                name: superset-env-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          volumeMounts:
+            - name: superset-config
+              mountPath: /app/pythonpath/superset_config.py
+              subPath: superset_config.py
+              readOnly: true
+      volumes:
+        - name: superset-config
+          configMap:
+            name: superset-config
+
+---
+# initContainer alternatif dans le Deployment Superset principal.
+# À utiliser si le Job autonome ne convient pas à votre orchestrateur.
+#
+# Avantage : garantit que le provisionnement s'exécute avant chaque pod.
+# Inconvénient : en cas d'échec, le pod reste en CrashLoopBackOff.
+#
+# Décommentez et intégrez dans votre Deployment Superset :
+#
+# spec:
+#   initContainers:
+#     - name: sak-provision-roles
+#       image: apache/superset:6.1.0
+#       command:
+#         - /bin/bash
+#         - -c
+#         - |
+#           pip install --quiet superset-auth-kit[api,cli] &&
+#           superset authkit check-compat &&
+#           superset authkit provision-roles
+#       envFrom:
+#         - secretRef:
+#             name: superset-env-secrets
+#       resources:
+#         requests:
+#           cpu: "100m"
+#           memory: "256Mi"
