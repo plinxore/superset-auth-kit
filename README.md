@@ -1,6 +1,6 @@
 # superset-auth-kit
 
-[![CI](https://github.com/plinxore/superset-auth-kit/actions/workflows/tests.yml/badge.svg)](https://github.com/plinxore/superset-auth-kit/actions/workflows/tests.yml)
+[![CI](https://github.com/plinxore/superset-auth-kit/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/plinxore/superset-auth-kit/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org/)
 [![Superset](https://img.shields.io/badge/superset-6.1.x-orange)](https://superset.apache.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
