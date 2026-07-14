@@ -4,13 +4,34 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "superset-auth-kit"
-version = "0.1.0"
-description = "Transparent SSO and Deep Embed for Apache Superset OSS (multi-tenant)"
+version = "0.1.1"
+description = "Transparent JWT-based SSO and multi-tenant dashboard embedding for Apache Superset"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
+keywords = ["superset", "sso", "jwt", "embed", "multi-tenant", "flask", "analytics"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Web Environment",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Internet :: WWW/HTTP",
+  "Topic :: Security",
+]
 dependencies = [
     "PyJWT>=2.6,<3",
     "cryptography>=41",   # RS256/ES256 PEM key decoding
 ]
+
+[project.urls]
+Homepage   = "https://github.com/plinxore/superset-auth-kit"
+Repository = "https://github.com/plinxore/superset-auth-kit"
+Issues     = "https://github.com/plinxore/superset-auth-kit/issues"
+Changelog  = "https://github.com/plinxore/superset-auth-kit/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 redis = ["redis>=4"]      # jti blocklist (replay attack protection)
